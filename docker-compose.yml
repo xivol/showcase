@@ -1,0 +1,118 @@
+# Объединённый стек для Portainer: postgres + minio (+init) + backend + frontend.
+# Деплой:
+#   - Portainer → Stacks → Add stack → Repository
+#   - Compose path: docker-compose.yml
+#   - Environment variables: заполнить все ${...} ниже (особенно OAuth-секреты)
+
+services:
+  postgres:
+    image: postgres:16.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-showcase}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?need POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [app-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-showcase}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?need MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?need MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio:/data
+    networks: [app-network]
+    # Консоль MinIO доступна на 9001 — пробрасывайте через reverse-proxy,
+    # а не публикуйте порты наружу в проде.
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Одноразовый init: создаёт бакет, если его нет
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      sh -c "
+        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+          echo 'waiting for minio...'; sleep 2;
+        done;
+        mc mb -p local/$$BUCKET || true;
+        mc anonymous set download local/$$BUCKET || true;
+        echo 'minio init done';
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      BUCKET: ${S3_BUCKET_NAME:-my-bucket}
+    networks: [app-network]
+    restart: "no"
+
+  backend:
+    build:
+      context: ./showcase-backend
+      dockerfile: Dockerfile
+    image: showcase-backend:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Datasource
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-showcase}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # S3 / MinIO
+      S3_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-my-bucket}
+      # OAuth — Azure AD
+      AZURE_TENANT_ID:     ${AZURE_TENANT_ID:?need AZURE_TENANT_ID}
+      AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:?need AZURE_CLIENT_ID}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:?need AZURE_CLIENT_SECRET}
+      # OAuth — GitHub
+      CLIENT_ID:     ${GITHUB_CLIENT_ID:?need GITHUB_CLIENT_ID}
+      CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?need GITHUB_CLIENT_SECRET}
+      # Доверять заголовкам от nginx (X-Forwarded-Proto/Host) — нужно для HTTPS-редиректов OAuth
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+    networks: [app-network]
+    # Порт наружу не публикуем — фронт ходит через внутреннюю сеть.
+    # Если нужен прямой доступ для отладки — раскомментируйте:
+    # ports: ["8080:8080"]
+
+  frontend:
+    build:
+      context: ./showcase-frontend
+      dockerfile: Dockerfile
+    image: showcase-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks: [app-network]
+    ports:
+      # На проде: убрать публикацию и поставить Traefik/NPM перед фронтом с TLS.
+      - "${FRONTEND_PORT:-8081}:80"
+
+volumes:
+  pgdata:
+  minio:
+
+networks:
+  app-network:
+    driver: bridge
