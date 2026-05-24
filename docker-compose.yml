@@ -62,10 +62,10 @@ services:
     restart: "no"
 
   backend:
-    build:
-      context: ./showcase-backend
-      dockerfile: Dockerfile
-    image: showcase-backend:latest
+    # Образ собирается в Dexight/showcase-backend (.github/workflows/build-and-push.yml)
+    # и публикуется в GHCR. Pакет должен быть public, иначе настрой registry в Portainer.
+    image: ghcr.io/dexight/showcase-backend:latest
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       postgres:
@@ -102,10 +102,8 @@ services:
     # ports: ["8080:8080"]
 
   frontend:
-    build:
-      context: ./showcase-frontend
-      dockerfile: Dockerfile
-    image: showcase-frontend:latest
+    image: ghcr.io/dexight/showcase-frontend:latest
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       - backend
