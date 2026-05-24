@@ -91,6 +91,11 @@ services:
       CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?need GITHUB_CLIENT_SECRET}
       # Доверять заголовкам от nginx (X-Forwarded-Proto/Host) — нужно для HTTPS-редиректов OAuth
       SERVER_FORWARD_HEADERS_STRATEGY: framework
+      # Куда редиректить после OAuth-логина и logout. Должен совпадать с тем, под каким
+      # URL опубликован фронт (https://...). В Azure/GitHub app тоже должен быть прописан
+      # callback вида ${FRONT_URL}/login/oauth2/code/azure (через nginx-прокси).
+      FRONT_ENV: production
+      FRONT_URL: ${FRONT_URL:?need FRONT_URL e.g. https://showcase.example.com}
     networks: [app-network]
     # Порт наружу не публикуем — фронт ходит через внутреннюю сеть.
     # Если нужен прямой доступ для отладки — раскомментируйте:
