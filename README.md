@@ -5,8 +5,6 @@
 - `showcase-backend/` — Spring Boot 3 / Java 23 REST API.
 - `showcase-frontend/` — React 19 + Vite SPA.
 
-Подробности по архитектуре кода — в [CLAUDE.md](CLAUDE.md), по деплою — в [DEPLOY.md](DEPLOY.md).
-
 ## Клонирование и обновление с сабмодулями
 
 ```bash
