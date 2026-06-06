@@ -1,0 +1,191 @@
+# =============================================================================
+#  Showcase — Portainer Stack
+#  Uses pre-built images from GitHub Container Registry (no build needed).
+#
+#  BEFORE deploying, set these env vars in Portainer's "Environment variables"
+#  section (or paste them into the editor's .env tab):
+#
+#    Required:
+#      POSTGRES_PASSWORD   – any strong password for the database
+#      MINIO_ROOT_USER     – MinIO admin username  (e.g. minioadmin)
+#      MINIO_ROOT_PASSWORD – MinIO admin password  (strong, 8+ chars)
+#      FRONT_URL           – public URL of the site (e.g. http://YOUR_SERVER_IP:8081)
+#
+#    Dev-mode auth (only needed when APP_DEPLOYMENT_MODE=dev):
+#      DEV_AUTH_TOKEN      – any secret string used as a Bearer token for login
+#      DEV_USER_ID         – a user ID from the users table (start with 0)
+#
+#    Production / Azure OAuth (only needed when APP_DEPLOYMENT_MODE=prod):
+#      AZURE_TENANT_ID
+#      AZURE_CLIENT_ID
+#      AZURE_CLIENT_SECRET
+#
+#  After deploying, open http://YOUR_SERVER_IP:8081
+# =============================================================================
+
+name: showcase
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-showcase}
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in env vars}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [app-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-showcase}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ── MinIO (S3-compatible file storage) ─────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in env vars}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in env vars}
+    volumes:
+      - minio:/data
+    networks: [app-network]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ── MinIO init (one-shot: creates the storage bucket) ──────────────────────
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      sh -c "
+      until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+        echo 'waiting for minio...'; sleep 2;
+      done;
+      mc mb -p local/$$BUCKET || true;
+      mc anonymous set download local/$$BUCKET || true;
+      echo 'minio bucket ready';
+      "
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      BUCKET:              ${S3_BUCKET_NAME:-my-bucket}
+    networks: [app-network]
+
+  # ── Backend (Spring Boot REST API) ─────────────────────────────────────────
+  backend:
+    image: ghcr.io/dexight/showcase-backend:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Database
+      DB_URL:      jdbc:postgresql://postgres:5432/${POSTGRES_DB:-showcase}
+      DB_USER:     ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Object storage
+      S3_URL:         http://minio:9000
+      S3_ACCESS_KEY:  ${MINIO_ROOT_USER}
+      S3_SECRET_KEY:  ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-my-bucket}
+      # Auth mode: "dev" = static Bearer token (no Azure needed)
+      #            "prod" = Azure AD OAuth (fill AZURE_* vars below)
+      APP_DEPLOYMENT_MODE: ${APP_DEPLOYMENT_MODE:-dev}
+      DEV_AUTH_TOKEN:      ${DEV_AUTH_TOKEN:-}
+      DEV_USER_ID:         ${DEV_USER_ID:-0}
+      # Azure AD (only used in prod mode — leave blank for dev)
+      AZURE_TENANT_ID:   ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID:   ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+      # Tell Spring to trust X-Forwarded-* headers from nginx
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      FRONT_ENV: production
+      FRONT_URL:  ${FRONT_URL:?Set FRONT_URL in env vars (e.g. http://YOUR_SERVER_IP:8081)}
+    networks: [app-network]
+
+  # ── Frontend builder (one-shot: copies pre-built SPA into shared volume) ───
+  frontend:
+    image: ghcr.io/dexight/showcase-frontend:latest
+    restart: "no"
+    volumes:
+      - frontend-dist:/out
+    networks: [app-network]
+
+  # ── nginx (serves SPA + proxies API to backend) ────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_completed_successfully
+      backend:
+        condition: service_started
+    volumes:
+      - frontend-dist:/usr/share/nginx/html:ro
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
+    ports:
+      # Change 8081 to any free port on your host.
+      # Remove "127.0.0.1:" prefix if you're NOT behind a reverse proxy.
+      - "${HTTP_PORT:-8081}:80"
+    networks: [app-network]
+
+# ── Named volumes (data survives container restarts) ───────────────────────────
+volumes:
+  pgdata:        # PostgreSQL data
+  minio:         # MinIO file storage
+  frontend-dist: # Built React SPA files shared between frontend and nginx
+
+# ── Internal network (containers talk to each other, not exposed to host) ──────
+networks:
+  app-network:
+    driver: bridge
+
+# ── Inline nginx config (no file upload needed) ────────────────────────────────
+configs:
+  nginx_conf:
+    content: |
+      server {
+          listen 80;
+
+          root  /usr/share/nginx/html;
+          index index.html;
+
+          # Cache static Vite assets forever (they're content-hashed)
+          location /assets/ {
+              expires    1y;
+              add_header Cache-Control "public, immutable";
+          }
+
+          # Proxy all backend routes to the Spring Boot API
+          location ~* ^/(api|oauth2|login|logout|actuator)(/|$$) {
+              proxy_pass         http://backend:8080;
+              proxy_http_version 1.1;
+              proxy_set_header   Host              $$host;
+              proxy_set_header   X-Real-IP         $$remote_addr;
+              proxy_set_header   X-Forwarded-For   $$proxy_add_x_forwarded_for;
+              proxy_set_header   X-Forwarded-Proto $$scheme;
+              proxy_set_header   X-Forwarded-Host  $$host;
+              proxy_read_timeout 120s;
+          }
+
+          # Everything else → React SPA (client-side routing)
+          location / {
+              try_files $$uri $$uri/ /index.html;
+          }
+      }
