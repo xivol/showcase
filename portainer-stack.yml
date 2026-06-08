@@ -157,6 +157,9 @@ volumes:
 networks:
   app-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
 
 # ── Inline nginx config (no file upload needed) ────────────────────────────────
 configs:
