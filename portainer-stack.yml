@@ -46,7 +46,7 @@ services:
 
   # ── MinIO (S3-compatible file storage) ─────────────────────────────────────
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -55,10 +55,16 @@ services:
     volumes:
       - minio:/data
     networks: [app-network]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 
   # ── MinIO init (one-shot: creates the storage bucket) ──────────────────────
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
     restart: "no"
     depends_on:
       minio:
@@ -67,35 +73,18 @@ services:
       - /bin/sh
       - -c
       - |
-        MAX_RETRIES=30; attempt=0
-        echo "Waiting for MinIO to become ready..."
-        until curl -sf http://minio:9000/minio/health/live >/dev/null; do
-          attempt=$((attempt+1))
-          if [ $$attempt -gt $$MAX_RETRIES ]; then
-            echo "MinIO not ready after $$MAX_RETRIES retries – aborting." >&2
-            exit 1
-          fi
-          echo "MinIO not ready yet (attempt $$attempt/$$MAX_RETRIES) – sleeping..."
-          sleep 2
+        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD 2>/dev/null; do
+          echo 'waiting for minio...'; sleep 2
         done
-  
-        echo "Configuring MinIO alias..."
-        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
-        if [ $$? -ne 0 ]; then
-          echo "Failed to set MinIO alias – check credentials." >&2
-          exit 1
-        fi
-  
-        echo "Creating bucket '$${BUCKET}' if it doesn't exist..."
-        mc mb --ignore-existing local/"$${BUCKET}"
-        mc anonymous set download local/"$${BUCKET}"
-        echo "MinIO init completed successfully."
+        mc mb --ignore-existing local/$$BUCKET
+        mc anonymous set download local/$$BUCKET
+        echo 'minio init done'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       BUCKET: ${S3_BUCKET_NAME:-my-bucket}
     networks: [app-network]
-  
+
   # ── Backend (Spring Boot REST API) ─────────────────────────────────────────
   backend:
     image: ghcr.io/dexight/showcase-backend:latest
