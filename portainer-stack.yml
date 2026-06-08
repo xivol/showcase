@@ -56,10 +56,11 @@ services:
       - minio:/data
     networks: [app-network]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 10
+
 
   # ── MinIO init (one-shot: creates the storage bucket) ──────────────────────
   minio-init:
@@ -68,19 +69,20 @@ services:
     depends_on:
       minio:
         condition: service_started
-    entrypoint: >
-      sh -c "
-      until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
-        echo 'waiting for minio...'; sleep 2;
-      done;
-      mc mb -p local/$$BUCKET || true;
-      mc anonymous set download local/$$BUCKET || true;
-      echo 'minio bucket ready';
-      "
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD 2>/dev/null; do
+          echo 'waiting for minio...'; sleep 2
+        done
+        mc mb --ignore-existing local/$$BUCKET
+        mc anonymous set download local/$$BUCKET
+        echo 'minio init done'
     environment:
-      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      BUCKET:              ${S3_BUCKET_NAME:-my-bucket}
+      BUCKET: ${S3_BUCKET_NAME:-my-bucket}
     networks: [app-network]
 
   # ── Backend (Spring Boot REST API) ─────────────────────────────────────────
