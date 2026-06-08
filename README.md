@@ -20,14 +20,6 @@ git pull --recurse-submodules
 git submodule update --remote --merge   # подтянуть свежие коммиты сабмодулей
 ```
 
-Полезно один раз настроить:
-
-```bash
-git config --global submodule.recurse true
-```
-
-Тогда `git pull` / `git checkout` будут автоматически обновлять сабмодули.
-
 ## Локальный запуск через docker-compose
 
 Нужно: Docker Desktop (или Docker Engine + Compose v2).
@@ -67,15 +59,6 @@ fetch-интерсептор добавляет `Authorization: Bearer <token>` 
 
 Наружу публикуется только `nginx` на `127.0.0.1:${HTTP_PORT}`.
 
-### Полезные команды
-
-```bash
-docker compose logs -f backend
-docker compose build frontend && docker compose up -d nginx   # пересобрать фронт
-docker compose down            # стоп
-docker compose down -v         # стоп + удалить данные (БД, MinIO)
-```
-
 ---
 
 # Архитектура развёртывания на сервере с публичным IP / доменом
@@ -107,7 +90,7 @@ docker compose down -v         # стоп + удалить данные (БД, M
 ## Что нужно поднять на машине
 
 1. **DNS**: A-запись домена (например `showcase.example.com`) → публичный IP VM.
-2. **Docker + Compose v2**, `git`, `nginx` (host-уровневый), `certbot`.
+2. **Docker + Compose**, `git`, `nginx` (host-уровневый), `certbot`.
 3. **Открытые порты**: `80` (для ACME-челленджа и редиректа), `443` (HTTPS).
    Порт `8081` стека наружу **не выставляем** — он на `127.0.0.1`.
 4. Клон репозитория + `.env`:
@@ -121,6 +104,7 @@ docker compose down -v         # стоп + удалить данные (БД, M
    docker compose up -d --build
    ```
 5. **TLS-сертификат**:
+   Я использовал `certbot`, но вы вольны настраивать сертефикаты любым удобным способом
    ```bash
    sudo certbot --nginx -d showcase.example.com
    ```
@@ -179,4 +163,23 @@ sudo nginx -t && sudo systemctl reload nginx
   redirect_uri_mismatch, а cookie сессии (`SameSite=None; Secure`) не установится.
 - **Стек слушает `127.0.0.1`**: исключает прямой доступ к HTTP в обход TLS.
 - **Azure App Registration** redirect URI должен быть
-  `https://<домен>/login/oauth2/code/azure` — см. [DEPLOY.md](DEPLOY.md).
+  `https://<домен>/login/oauth2/code/azure`
+
+
+
+# Azure
+Для добавления интеграции с Azure необходимо заполнить следующие переменные окружения:
+```env
+AZURE_TENANT_ID=
+AZURE_CLIENT_ID=
+AZURE_CLIENT_SECRET=
+```
+где 
+- `AZURE_TENANT_ID` - Идентификатор клиента (ЮФУ) = `19ba435d-e46c-436a-84f2-1b01e693e480`  
+- `AZURE_CLIENT_ID` - Идентификатор приложения, созданного через [Azure](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade/isMSAApp~/false) 
+- `AZURE_CLIENT_SECRET` - Секретный ключ приложения, который можно создать так же в Azure.
+
+При регистрации приложения так же необходимо указать адрес redirect:
+-  `https://<домен>/login/oauth2/code/azure`
+  Иначе авторизация не будет работать
+
